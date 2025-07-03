@@ -1,0 +1,9 @@
+New update
+1) Added auto-indentation
+2) Different file icons for different file types
+3) Added more functionalality to unsaved tabs
+4) Added more file types in save/open commands
+5) Added save as command
+6) Open HTML file correctly
+
+Enjoy !!
