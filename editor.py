@@ -1,61 +1,31 @@
-# import neccesary modules
-import html.entities
 from PyQt5.QtWidgets import (QApplication, QWidget, QTextEdit, QMainWindow, QMenuBar, QAction, QTabWidget, 
-                             QVBoxLayout, QFileDialog, QMessageBox, QStatusBar, QLabel, QLineEdit, QHBoxLayout, 
-                             QPushButton)
-from PyQt5.QtGui import QIcon, QTextCursor, QPixmap
-from PyQt5.QtCore import Qt, QDir
-import sys, os, html
-
-# text editor class
-class TextEditor(QTextEdit):
-    def __init__(self, parent):
-        super().__init__(parent)
-
-    # capture key events
-    def keyPressEvent(self, event):
-        cursor = self.textCursor()
-        current_block_text = cursor.block().text()
-
-        if event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
-            # Get indentation of current line
-            leading_whitespace = self.get_leading_whitespace(current_block_text)
-        
-            super().keyPressEvent(event)
-            if current_block_text.rstrip().endswith(":"):
-                # Insert new line with same indentation
-                cursor.insertText(leading_whitespace + "   ")
-            elif current_block_text.rstrip().endswith("{"):
-                # Insert new line with same indentation
-                cursor.insertText(leading_whitespace + "   ")
-            else:
-                # Insert new line with same indentation
-                cursor.insertText(leading_whitespace)
-        else:
-            super().keyPressEvent(event)
-
-    def get_leading_whitespace(self, text):
-        #Subtract stripped text from normal text 
-        return text[:len(text) - len(text.lstrip())]
-    
-    def setText(self, text):
-        self.textCursor().insertText(text)
+                             QVBoxLayout, QFileDialog, QMessageBox, QStatusBar, QLabel, QHBoxLayout, QSplitter, 
+                             QScrollArea, QFileSystemModel, QTreeView)
+from PyQt5.QtGui import QIcon, QPixmap, QTransform
+from PyQt5.QtCore import Qt, QDir, QTimer
+import os, html
+from file_utils import TextEditor, FindReplaceDialog
 
 # main app class
 class TextApp(QMainWindow):
-    fileopened = {} #index:file_path
-    file_asterisk = False
-    filesaved = {} #index:if_saved
     child_windows = []
-    recent_files = set()
+    recent_files = []
+    folder = ""
+    save_directory = os.path.join(QDir.homePath(), "AppData", "Roaming", "XDS")
+    if not os.path.exists(save_directory):
+        os.mkdir(save_directory)
     def __init__(self):
         super().__init__()
         # set window properties
         self.clip = QApplication.clipboard()
         self.setWindowTitle("Text App")
-        self.setWindowIcon(QIcon(os.path.join(os.path.split(__file__)[0]+"/images","4.ico")))
-        self.resize(1000, 600)
+        self.setWindowIcon(QIcon(os.path.join(os.path.split(__file__)[0], "images", "4.ico")))
+        self.resize(1200, 550)
+        self.setAcceptDrops(True)
         self.initUI()
+        self.fileopened = {} #index:file_path
+        self.file_asterisk = False
+        self.filesaved = {} #index:if_saved
 
 ### method to initialize the widgets
     def initUI(self):
@@ -64,14 +34,39 @@ class TextApp(QMainWindow):
         self.menu()
         self.status()
 
-        self.tabs = QTabWidget(self.window)
+        hbox = QHBoxLayout()
+        self.main_layout = QSplitter(Qt.Horizontal)
+        
+        self.main_layout.setAcceptDrops(True)
+        self.main_layout.addWidget(self.toolbar())
+
+        self.tabs = QTabWidget()
+        self.tabs.mouseDoubleClickEvent = lambda a0: self.addNewTab("untitled")
         self.tabs.setTabsClosable(True)
         self.tabs.tabCloseRequested.connect(self.close_window)
         self.tabs.currentChanged.connect(self.get_row_column)
-        vbox = QVBoxLayout(self.window)
-        vbox.addWidget(self.tabs)
+        self.main_layout.addWidget(self.tabs)
+        self.main_layout.setSizes([50, 300])
+        self.main_layout.setMidLineWidth(0)
+        hbox.addWidget(self.main_layout)
+
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.update_file)
+        self.timer.start(1000)
+
+        self.window.setLayout(hbox)
         self.initStyle()
         self.setCentralWidget(self.window)
+    
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.accept()
+    
+    def dropEvent(self, event):
+        for url in event.mimeData().urls():
+            path = url.toLocalFile()
+            if os.path.exists(path):
+                self.file("o", [1, path])
 
 ##  method to return file type
     @staticmethod
@@ -132,7 +127,7 @@ class TextApp(QMainWindow):
         return lan
 
 #### method to add tabs
-    def addNewTab(self, name, data=""):
+    def addNewTab(self, name, data="", fp=""):
         def changesave():
             self.filesaved[self.tabs.currentIndex()] = False
             self.file_asterisk = True
@@ -140,21 +135,38 @@ class TextApp(QMainWindow):
         widget = QWidget()
         vbox2 = QVBoxLayout(widget)
         
-        # initialize text editor class and change properties
-        tab = TextEditor(widget)
-        if name.endswith('.html'):
-            data = html.unescape(data)
-        print(data)
-        tab.setText(data)
-        tab.textChanged.connect(changesave)
-        tab.setAcceptDrops(True)
-        lan = self.get_file_type(name)
-        icon = QPixmap(os.path.join(os.path.split(__file__)[0]+"/images", f"{lan}.ico"))
-        self.tabs.addTab(widget, QIcon(icon), name)
-        self.tabs.setCurrentIndex(self.tabs.count() - 1)
-        vbox2.addWidget(tab)
-        self.filesaved[self.tabs.currentIndex()] = True
-        tab.cursorPositionChanged.connect(self.get_row_column)
+        # initialize text editor class and change properties if it is not an image
+        if data == "image":
+            image_lbl = QLabel(widget)
+            img = QPixmap(fp)
+            image_lbl.setAlignment(Qt.AlignCenter)
+            image_lbl.setStyleSheet("background-color: black")
+            transform =  QTransform().rotate(90)
+            if img.height() > 500 or img.width() > 500:
+                image_lbl.setPixmap(img.scaled(500, 400, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            elif img.height() > img.width():
+                image_lbl.setPixmap(img.scaled(300, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            else:
+                image_lbl.setPixmap(img)
+            self.tabs.addTab(widget, name)
+            self.tabs.setCurrentIndex(self.tabs.count() - 1)
+            self.tabs.currentWidget().setStyleSheet("color:black")
+            self.setWindowTitle(f"{name} - {os.path.split(self.folder)[1]} - Text App") if self.folder != "" else  self.setWindowTitle(f"{name} - Text App")
+            vbox2.addWidget(image_lbl)
+        else:
+            tab = TextEditor(widget)
+            if name.endswith('.html'):
+                data = html.unescape(data)
+            tab.setText(data)
+            tab.textChanged.connect(changesave)
+            tab.setAcceptDrops(True)
+            lan = self.get_file_type(name)
+            icon = QPixmap(os.path.join(os.path.split(__file__)[0], "images", f"{lan}.ico"))
+            self.tabs.addTab(widget, QIcon(icon), name)
+            self.tabs.setCurrentIndex(self.tabs.count() - 1)
+            vbox2.addWidget(tab)
+            self.filesaved[self.tabs.currentIndex()] = True
+            tab.cursorPositionChanged.connect(self.get_row_column)
 
         #refresh statusbar and menubar
         self.status()
@@ -172,40 +184,72 @@ class TextApp(QMainWindow):
                     self.tabs.setTabText(index, "*untitled")
         else:
             self.tabs.setTabText(self.tabs.currentIndex(), f"{os.path.split(self.fileopened[self.tabs.currentIndex()])[1]}")
-            self.setWindowTitle(os.path.split(self.fileopened[self.tabs.currentIndex()])[1])
+            self.setWindowTitle(f"{os.path.split(self.fileopened[self.tabs.currentIndex()])[1]} - {os.path.split(self.folder)[1]} - Text App") if self.folder != "" else  self.setWindowTitle(f"{os.path.split(self.fileopened[self.tabs.currentIndex()])[1]} - Text App")
 
 #### method to get text editor of the current tab 
     def current_text_edit(self):
         return self.tabs.currentWidget().findChild(QTextEdit)
 
-## double click event capture to open a new tab
-    def mouseDoubleClickEvent(self, a0):
-        self.addNewTab("untitled")
-
 #### method to close window tab
     def close_window(self, tab=""):
         def close():
-            try:
+            if self.tabs.tabText(self.tabs.currentIndex()) in self.fileopened.values():
                 self.fileopened.pop(self.tabs.currentIndex())
-            except KeyError:
-                pass
+                self.filesaved.pop(self.tabs.currentIndex())
             if tab == "":
                 self.tabs.removeTab(self.tabs.currentIndex())
             else:
                 self.tabs.removeTab(tab)
-            if self.tabs.count() == 0:
-                self.setWindowTitle("Text App")
             self.menu()
             self.status()
 
         if self.filesaved[self.tabs.currentIndex()]:
             close()
+            self.setWindowTitle(f"{self.tabs.tabText(self.tabs.currentIndex())} - {self.folder} - Text App") if self.folder != "" else self.setWindowTitle(f"{self.tabs.tabText(self.tabs.currentIndex())} - Text App")
+            if self.tabs.count() == 0: self.setWindowTitle("Text App")
         else:
             reply = QMessageBox.warning(self, "Unsaved Tab", 
                                 "Do you want to close the unsaved tab", 
                                 QMessageBox.Yes|QMessageBox.No)
             if reply == QMessageBox.Yes:
                 close()
+
+#### method to add a toolbar
+    def toolbar(self):
+        self.scroller = QScrollArea()
+        file_view = QTreeView()
+
+        # Set up the model
+        model = QFileSystemModel()
+        model.setRootPath(QDir.rootPath())
+        file_view.setModel(model)
+
+        # Set root to the current folder (if available)
+        if self.folder != "":
+            file_view.setRootIndex(model.index(self.folder))
+        else:
+            file_view.setRootIndex(model.index(QDir.homePath()))    
+
+        # Enable dragging
+        file_view.setDragEnabled(True)
+        file_view.setAcceptDrops(False)
+        file_view.setDropIndicatorShown(True)
+        file_view.setSelectionMode(file_view.SingleSelection)
+
+        # On double click, open the file
+        file_view.doubleClicked.connect(lambda index: self.file("o", [1, model.filePath(index)]))
+
+        self.scroller.setWidgetResizable(True)
+        self.scroller.setWidget(file_view)
+        return self.scroller
+
+#### method to sort folders
+    def get_folder(self):
+        self.folder = QFileDialog.getExistingDirectory(caption="Open Any Folder")
+        self.recent_files.append(f"{self.folder}")
+        self.add_recent()
+        self.scroller.close()
+        self.initUI()
 
 #### method to create menu bar
     def menu(self):
@@ -214,8 +258,8 @@ class TextApp(QMainWindow):
 
         # File Actions
         file = menubar.addMenu("File")
-        file_commands = (["New", "Ctrl+N"], ["Save", "Ctrl+S"], ["Open", "Ctrl+O"], ["Save As", "Ctrl+Shift+S"],
-                         ["New Window", "Ctrl+Shift+N"], ["Close Tab", "Ctrl+W"], ["Quit", "Ctrl+Q"])
+        file_commands = (["New", "Ctrl+N"], ["Save", "Ctrl+S"], ["Open", "Ctrl+O"], ["Open Folder", "Ctrl+Shift+F"], ["Save As", "Ctrl+Shift+S"],
+                         ["New Window", "Ctrl+Shift+N"], ["Open External Command Prompt", "Ctrl+Shift+C"], ["Close Tab", "Ctrl+W"], ["Quit", "Ctrl+Q"])
         for i in file_commands:
             action = QAction(i[0], self)
             action.setShortcut(i[1])
@@ -232,16 +276,15 @@ class TextApp(QMainWindow):
             if i == ["Close Tab", "Ctrl+W"]:
                 file.addSeparator()
                 recent = file.addMenu("Recent Files")
-                try:
-                    with open(os.path.split(__file__)[0]+"/recent.lst", "r") as f:
-                        for i in f.readlines():
-                            recent.addAction(i)
-                            self.recent_files.add(i)
-                        if i == 0:
-                            file.setEnabled(False)
-                except FileNotFoundError:
-                    with open("recent.lst", "w") as f:
-                        pass
+                self.recent_filepath = os.path.join(self.save_directory, "recent.lst")
+                if os.path.exists(self.recent_filepath):
+                    with open(self.recent_filepath, "r") as f:
+                        for i in f.read().split(";"):
+                            if i != "":
+                                recent.addAction(i)
+                                self.recent_files.append(i)
+                else:
+                    open(self.recent_filepath, "w").close()
                 recent.addSeparator()
                 if len(self.recent_files) == 0:
                     recent.setEnabled(False)
@@ -281,7 +324,8 @@ class TextApp(QMainWindow):
             row = cursor.blockNumber()
             column = cursor.positionInBlock()
             self.status(row, column)
-            self.setWindowTitle(f"{self.tabs.tabText(self.tabs.currentIndex())}")
+            self.setWindowTitle(f"{self.tabs.tabText(self.tabs.currentIndex())} - {os.path.split(self.folder)[1]} - Text App") if self.folder != "" else  self.setWindowTitle(f"{self.tabs.tabText(self.tabs.currentIndex())} - Text App")
+
         except Exception as e:
             pass
 
@@ -301,68 +345,76 @@ class TextApp(QMainWindow):
         
 #### method to handle commands from the menu bar
     def menu_commands(self, command):
-        command = command.text().lower()
+        command = command.text()
         match command:
-            case "new":
+            case "New":
                 self.addNewTab("untitled")
-            case "save":
+            case "Save":
                 self.file("s")
-            case "open":
+            case "Open":
                 self.file("o")
-            case "save as":
+            case "Save As":
                 self.file("s", ["saveas", ''])
-            case "new window":
+            case "New Window":
                 new_win = TextApp()
                 new_win.setGeometry(self.x()-10, self.y()+50, self.width(), self.height())
                 new_win.show()
                 self.child_windows.append(new_win)
-            case "close tab":
+            case "Open Folder":
+                self.get_folder()
+                self.tabs.clear()
+            case "Close Tab":
                 self.close_window()
-            case "clear":
-                with open(os.path.split(__file__)[0]+"/recent.lst", "w") as f:
+            case "Clear":
+                with open(self.recent_filepath, "w") as f:
                     f.write("")
+                self.recent_files.clear()
                 self.menu()
-            case "quit":
+            case "Open External Command Prompt":
+                os.system("start")
+            case "Quit":
                 check = QMessageBox(QMessageBox.Question, "Exit", "Do you really want to exit", QMessageBox.Yes|QMessageBox.No)
                 check.buttonClicked.connect(lambda e: self.close() if e.text() == "&Yes" else e.text())
                 check.exec_()
-            case "copy":
+            case "Copy":
                 if self.tabs.count() != 0:
                     self.clip.setText(self.current_text_edit().textCursor().selectedText())
-            case "paste":
+            case "Paste":
                 if self.tabs.count() != 0:
                     cursor = self.current_text_edit().textCursor()
                     cursor.insertText(self.clip.text())
-            case "find/replace":
+            case "Find/Replace":
                 if self.tabs.count() != 0:
                     dlg = FindReplaceDialog(self)
                     dlg.show()
-            case "documentation":
+            case "Documentation":
                 QMessageBox.about(self, "Documentation",
                                   """
                                   Open the menu for commands and you can use shortcuts
                                   """)
-            case "about":
+            case "About":
                 QMessageBox.about(self, "About", "Created in Nigeria by Calvin")
             case _:
-                self.file("o", [1, command[:-1]])
+                self.file("o", [1, command])
 
 #### method to add recent file
     def add_recent(self):
+        files = set()
         try:
-            path = os.path.split(__file__)[0]+"/recent.lst"
+            path = self.recent_filepath
             with open(path, "r") as k:
-                for j in k.readlines():
-                    self.recent_files.add(f"{j}")
+                for j in k.read().split(";"):
+                    self.recent_files.append(f"{j}")
             with open(path, "w") as h:
-                h.writelines(self.recent_files)
+                for j in self.recent_files:
+                    files.add(j)
+                h.write(";".join(files))
             self.menu()
         except FileNotFoundError:
-            with open(path, "w") as h:
-                pass
+            open(path, "w").close()
 
 #### method to open and save file
-    def file(self, file_handling, mode=[0,""]):
+    def file(self, file_handling, mode=[0, ""]):
         files = """
             All Files(* *.);;
             Text Files (*.txt);;
@@ -389,34 +441,52 @@ class TextApp(QMainWindow):
             TypeScript Files (*.ts);;
             Vue Files (*.vue);;
             XML Files (*.xml);;
-            Yaml Files (*.yaml);;
+            Yaml Files (*.yaml)
         """
+        images = [".png", ".jpg", ".ico", ".webp", ".jpeg"]
         if file_handling == "o":
             if mode[0] == 1:
-                if os.path.exists(mode[1]):
-                    with open(mode[1], "r") as f:
-                        # get filename name
-                        filename_and_path = os.path.split(mode[1])
-                        filename = filename_and_path[1]
-                        # open a new tab and select that tab
-                        self.addNewTab(filename, f.read())
-                        self.tabs.setCurrentIndex(self.tabs.count()-1)
-                        self.fileopened[self.tabs.currentIndex()] = mode[1]
-                        self.filesaved[self.tabs.currentIndex()] = True
-                        self.add_recent()
+                if mode[1] not in self.fileopened.values():
+                    if os.path.exists(mode[1]):
+                        if os.path.isdir(mode[1]):
+                            self.folder = mode[1]
+                            self.scroller.close()
+                            self.initUI()
+                        else:
+                            if mode[1][mode[1].rindex("."):] in images:
+                                self.addNewTab(name= os.path.split(mode[1])[1], data="image", fp=mode[1])
+                                self.fileopened[self.tabs.currentIndex()] = mode[1]
+                                self.filesaved[self.tabs.currentIndex()] = True
+                            else:
+                                try:
+                                    with open(mode[1], "r") as f:
+                                        # get filename name
+                                        filename_and_path = os.path.split(mode[1])
+                                        filename = filename_and_path[1]
+                                        # open a new tab and select that tab
+                                        self.addNewTab(filename, f.read())
+                                        self.tabs.setCurrentIndex(self.tabs.count()-1)
+                                        self.fileopened[self.tabs.currentIndex()] = mode[1]
+                                        self.filesaved[self.tabs.currentIndex()] = True
+                                except UnicodeDecodeError:
+                                    QMessageBox.warning(self, "Unable to open", "Cannot open file type")
+                    else:
+                        QMessageBox.warning(self, "Warning", "File is not found")
                 else:
-                    QMessageBox.warning(self, "Warning", "File is not found")
-
+                    for count, i in enumerate(self.fileopened.keys()):
+                        if self.fileopened[count] == mode[1]:
+                            self.tabs.setCurrentIndex(i)
             else:
                 while True:
                     current = ""
                     try:current = QDir.homePath() if self.tabs.count() == 0 else os.path.split(self.fileopened[self.tabs.currentIndex()])[0]
                     except:pass
+                    if self.folder != "": current = self.folder
                     dialog = QFileDialog()
                     dialog.setMinimumSize(300, 200)
                     file = dialog.getOpenFileName(self, "Open File", current, 
                                                     files
-                                                    ,"Python Files (*.py *.pyw *.pyc)",)
+                                                    )
                     try:
                         if file[0] not in self.fileopened.values():
                             with open(file[0], "r") as f:
@@ -426,7 +496,9 @@ class TextApp(QMainWindow):
                                 # open a new tab and select that tab
                                 self.addNewTab(filename, f.read())
                                 self.tabs.setCurrentIndex(self.tabs.count()-1)
-                                self.recent_files.add(f"{file[0]}\n")
+                                self.fileopened[self.tabs.currentIndex()] = file[0]
+                                self.filesaved[self.tabs.currentIndex()] = True
+                                self.recent_files.append(f"{file[0].replace("\\", "/")}")
                                 self.add_recent()
                         else:
                             for count, i in enumerate(self.fileopened.keys()):
@@ -437,15 +509,21 @@ class TextApp(QMainWindow):
                         QMessageBox(QMessageBox.Critical, "No File", "No file was selected").exec_()
                         break
                     except UnicodeDecodeError:
-                        QMessageBox(QMessageBox.Critical, "Unknown file type", "File type is unknown").exec_()
-                        continue
+                        images = [".png", ".jpg", ".webp", ".jpeg", ".ico"]
+                        if file[0][file[0].rindex("."):] in images:
+                            self.addNewTab(name=os.path.split(file[0])[1], data="image", fp=file[0])
+                            self.fileopened[self.tabs.currentIndex()] = mode[1]
+                            self.filesaved[self.tabs.currentIndex()] = True
+                            self.recent_files.append(f"{file[0].replace("\\", "/")}")
+                            self.add_recent()
+                            break
         elif file_handling == "s":
             if self.tabs.count() > 0 and self.tabs.currentIndex() not in self.fileopened or mode[0] == "saveas":
                 dialog = QFileDialog()
                 dialog.setMinimumSize(300, 200)
                 file = dialog.getSaveFileName(self, "Save File", os.path.split(__file__)[0], 
                                                 files
-                                                ,"Python Files (*.py *.pyw *.pyc)")
+                                                )
                 try:
                     with open(file[0], "w") as f:
                         filename_and_path = os.path.split(file[0])
@@ -459,16 +537,17 @@ class TextApp(QMainWindow):
                         self.tabs.setTabIcon(self.tabs.currentIndex(), 
                                              QIcon(icon)
                                             )
-                        self.setWindowTitle(f"{self.filename}")
+                        self.setWindowTitle(f"{self.filename} - {os.path.split(self.folder)[1]} - Text App") if self.folder != "" else  self.setWindowTitle(f"{self.filename} - Text App")
+
                         self.fileopened[self.tabs.currentIndex()] = file[0]
                         self.filesaved[self.tabs.currentIndex()] = True
-                        self.recent_files.add(f"{file[0]}\n")
+                        self.recent_files.append(f"{file[0].replace("\\", "/")}")
                         self.add_recent()
                         self.menu()
                 except FileNotFoundError:
                     QMessageBox(QMessageBox.Critical, "No File", "No file was selected").exec_()
-                except Exception as e:
-                    print(e)
+                except Exception:
+                    pass
             else:
                 try:
                     with open(self.fileopened[self.tabs.currentIndex()], "w") as f:
@@ -478,6 +557,23 @@ class TextApp(QMainWindow):
                         self.asterisk()
                 except Exception:
                     pass
+    def update_file(self):
+        images = [".png", ".jpg", ".webp", ".jpeg", ".ico"]
+        for i, j in self.fileopened.items():
+            if not os.path.isdir(j):
+                if j[j.rindex("."):len(j)] not in images:
+                    try:
+                        with open(j, "r") as f:
+                            disk_content = f.read()
+                        editor = self.tabs.widget(i).findChild(QTextEdit)
+                        current_content = editor.toPlainText()
+                        if disk_content != current_content and self.filesaved[i]:
+                            editor.blockSignals(True) # to prevent textChanged event
+                            editor.setPlainText(disk_content)
+                            editor.blockSignals(False)
+                            self.asterisk()
+                    except FileNotFoundError:
+                        pass
 
 #### method to style the widgets
     def initStyle(self):
@@ -505,90 +601,3 @@ class TextApp(QMainWindow):
             }
             """
         )
-
-class FindReplaceDialog(QMainWindow):
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.setWindowTitle("Find and Replace")
-        self.setFixedSize(400, 150)
-        self.setStyleSheet("QMainWindow, QMessageBox{background-color:rgb(50, 50, 50)}QLabel{color:rgb(200, 200, 200)}")
-
-        self.parent = parent
-
-        window = QWidget()
-
-        self.find_input = QLineEdit()
-        self.replace_input = QLineEdit()
-        self.find_btn = QPushButton("Find")
-        self.replace_btn = QPushButton("Replace")
-        self.replace_all_btn = QPushButton("Replace All")
-
-        layout = QVBoxLayout()
-        layout.addWidget(QLabel("Find:"))
-        layout.addWidget(self.find_input)
-        layout.addWidget(QLabel("Replace With:"))
-        layout.addWidget(self.replace_input)
-
-        btn_layout = QHBoxLayout()
-        btn_layout.addWidget(self.find_btn)
-        btn_layout.addWidget(self.replace_btn)
-        btn_layout.addWidget(self.replace_all_btn)
-
-        layout.addLayout(btn_layout)
-        window.setLayout(layout)
-
-        self.find_btn.clicked.connect(self.find)
-        self.replace_btn.clicked.connect(self.replace)
-        self.replace_all_btn.clicked.connect(self.replace_all)
-
-        self.setCentralWidget(window)
-
-    def get_editor(self):
-        return self.parent.tabs.currentWidget().findChild(QTextEdit)
-
-    def find(self):
-        editor = self.get_editor()
-        cursor = editor.textCursor()
-        text_to_find = self.find_input.text()
-
-        if editor.toPlainText().find(text_to_find) != -1:
-            start_position = editor.toPlainText().find(text_to_find)
-            end_position = start_position + len(text_to_find)
-
-            cursor.setPosition(start_position)
-            cursor.setPosition(end_position, QTextCursor.MoveMode.KeepAnchor)
-            editor.setTextCursor(cursor)
-        else:
-            QMessageBox.information(self, "Not Found", f"'{text_to_find}' not found.")
-
-    def replace(self):
-        editor = self.get_editor()
-        cursor = editor.textCursor()
-        if cursor.hasSelection():
-            cursor.insertText(self.replace_input.text())
-        else:
-            self.find()
-
-    def replace_all(self):
-        editor = self.get_editor()
-        content = editor.toPlainText()
-        find_text = self.find_input.text()
-        replace_text = self.replace_input.text()
-        count = content.count(find_text)
-        if count == 0:
-            QMessageBox.information(self, "No Matches", "No matches found.")
-            return
-        editor.setPlainText(content.replace(find_text, replace_text))
-        QMessageBox.information(self, "Replace All", f"Replaced {count} occurrence(s).")
-
-#### Main method to create the window
-def main():
-    app = QApplication(sys.argv)
-    win = TextApp()
-    win.show()
-    if len(sys.argv) > 1:
-        win.file("o", [1, sys.argv[1] ])
-    app.exec_()
-
-if __name__  == "__main__":
-    main()
